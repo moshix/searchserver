@@ -17,7 +17,8 @@
 # v1.4 Add invocation parameter --delay for first 25 lines
 # v1.5 Log to server.log now
 # v1.6 recursiverly saearch subdirectories
-# v1.7 show results as they are found
+# v1.7 for too many results, stop and give error msg
+# v1.8 insert comments in code.... 
 # invoke with python3 telnet_server.py --port 8023 --delay 0.05 --delay_lines 25 --files_dir FILES/
 
 import socket
@@ -30,7 +31,7 @@ from datetime import datetime
 import argparse
 
 # Version information
-version = "1.7"
+version = "1.8"
 
 # ANSI color codes for formatting
 COLOR_RESET = "\033[0m"
@@ -39,6 +40,9 @@ COLOR_BLUE = "\033[1;34m"
 COLOR_RED = "\033[1;31m"
 COLOR_YELLOW = "\033[1;33m"
 COLOR_CYAN = "\033[1;36m"
+
+# Maximum number of search results
+MAX_RESULTS = 30
 
 class TelnetServer:
     def __init__(self, host='0.0.0.0', port=8023, delay=0.05, delay_lines=25, files_dir='FILES/'):
@@ -74,10 +78,11 @@ class TelnetServer:
         signal.signal(signal.SIGINT, self.handle_sigint)
 
     def handle_sigint(self, signum, frame):
+        """Handle SIGINT signal to shut down the server gracefully."""
         print("\nSIGINT received. Shutting down the server.")
         self.running = False
         self.server_socket.close()
-
+        
         # Close all client connections
         for thread in self.threads:
             thread.join()
@@ -88,6 +93,7 @@ class TelnetServer:
         print("Server shut down successfully.")
 
     def log(self, message, client_address=None):
+        """Log messages to both the console and log file."""
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         log_message = f"{timestamp} - {client_address} - {message}" if client_address else f"{timestamp} - {message}"
         print(log_message)
@@ -95,6 +101,7 @@ class TelnetServer:
         self.log_file.flush()
 
     def handle_client(self, client_socket, client_address):
+        """Handle client connections and process commands."""
         with self.lock:
             self.client_count += 1
             self.total_clients += 1
@@ -126,7 +133,7 @@ class TelnetServer:
                         with self.lock:
                             self.total_commands += 1
 
-                        response = self.handle_command(message, client_socket, client_address)
+                        response = self.handle_command(message, client_address)
                     else:
                         response = message
 
@@ -150,6 +157,7 @@ class TelnetServer:
             self.log(f"Connection with {client_address} closed.", client_address)
 
     def send_response(self, client_socket, response):
+        """Send response to the client with optional delay for the first few lines."""
         lines = response.split('\r\n')
         for i, line in enumerate(lines):
             if i < self.delay_lines:
@@ -158,7 +166,8 @@ class TelnetServer:
             else:
                 client_socket.sendall((line + '\r\n').encode('utf-8'))
 
-    def handle_command(self, command, client_socket, client_address):
+    def handle_command(self, command, client_address):
+        """Handle commands received from the client."""
         parts = command.split(" ", 1)
         cmd = parts[0].lower()
 
@@ -171,8 +180,7 @@ class TelnetServer:
                 with self.lock:
                     self.search_count += 1
                 self.log(f"Search command with keyword: {keyword}", client_address)
-                self.search_files(client_socket, keyword)
-                return ""
+                return self.search_files(keyword)
             else:
                 return self.invalid_command("Usage: /search <keyword>")
 
@@ -199,9 +207,11 @@ class TelnetServer:
             return self.invalid_command("Unknown command. Type /help for a list of commands.")
 
     def invalid_command(self, message):
+        """Return error message for invalid commands."""
         return f"{COLOR_RED}Error: {message}{COLOR_RESET}"
 
     def show_help(self):
+        """Show help message with available commands."""
         help_text = (
             f"{COLOR_BLUE}Available commands:{COLOR_RESET}\r\n"
             f"{COLOR_BLUE}{'Command':<15} {'Description'}{COLOR_RESET}\r\n"
@@ -216,42 +226,48 @@ class TelnetServer:
         return help_text
 
     def paginate_response(self, header, lines, page_size=25):
+        """Paginate long responses for better readability."""
         paginated_response = []
         for i in range(0, len(lines), page_size):
             page = lines[i:i + page_size]
             paginated_response.append(header + "\r\n" + "\r\n".join(page))
         return "\r\n".join(paginated_response)
 
-    def search_files(self, client_socket, keyword):
-        header = (
-            f"{COLOR_GREEN}Files containing the keyword '{keyword}':{COLOR_RESET}\r\n"
-            f"{COLOR_GREEN}{'No.':<5} {'File':<43} {'Location':<10} {'Content'}{COLOR_RESET}\r\n"
-            f"{'-'*100}\r\n"
-        )
-        self.send_response(client_socket, header)
+    def search_files(self, keyword):
+        """Search files for the given keyword and return the results."""
+        matching_files = []
         keyword = keyword.lower()
-        match_count = 0
-
         for root, dirs, files in os.walk(self.files_dir):
             for file in files:
                 file_path = os.path.join(root, file).replace(self.files_dir, "")
                 if file.lower().endswith('.pdf'):
                     matches = self.search_pdf(file_path, keyword)
-                    for match in matches:
-                        match_count += 1
-                        response = f"{match_count:<5} {COLOR_BLUE}{file_path:<43} {COLOR_YELLOW}{match[0]:<10} {COLOR_RESET}{match[1]}"
-                        self.send_response(client_socket, response)
+                    if matches:
+                        for match in matches:
+                            matching_files.append((file_path, match[0], match[1]))
                 else:
                     with open(os.path.join(root, file), 'r', errors='ignore') as f:
                         for line_number, line in enumerate(f, 1):
                             if keyword in line.lower():
-                                match_count += 1
-                                response = f"{match_count:<5} {COLOR_BLUE}{file_path:<43} {COLOR_YELLOW}Line {line_number:<10} {COLOR_RESET}{line.strip()}"
-                                self.send_response(client_socket, response)
-        if match_count == 0:
-            self.send_response(client_socket, f"{COLOR_RED}No files found containing the keyword '{keyword}'.{COLOR_RESET}")
+                                matching_files.append((file_path, f"Line {line_number}", line.strip()))
+
+                # Stop search if too many results are found
+                if len(matching_files) > MAX_RESULTS:
+                    return f"{COLOR_RED}Too many search results found. Stopping search.{COLOR_RESET}"
+
+        if matching_files:
+            header = (
+                f"{COLOR_GREEN}Files containing the keyword '{keyword}':{COLOR_RESET}\r\n"
+                f"{COLOR_GREEN}{'No.':<5} {'File':<43} {'Location':<10} {'Content'}{COLOR_RESET}\r\n"
+                f"{'-'*100}"
+            )
+            results = [f"{i + 1}. {COLOR_BLUE}{file:<43} {COLOR_YELLOW}{location:<10} {COLOR_RESET}{line}" for i, (file, location, line) in enumerate(matching_files)]
+            return self.paginate_response(header, results)
+        else:
+            return f"{COLOR_RED}No files found containing the keyword '{keyword}'.{COLOR_RESET}"
 
     def search_pdf(self, file_path, keyword):
+        """Search PDF files for the given keyword and return the results."""
         matches = []
         full_path = os.path.join(self.files_dir, file_path)
         with open(full_path, 'rb') as file:
@@ -266,6 +282,7 @@ class TelnetServer:
         return matches
 
     def search_videos(self, keyword):
+        """Search videos.txt for the given keyword and return the results."""
         matching_lines = []
         keyword = keyword.lower()
         if os.path.exists(VIDEOS_FILE):
@@ -286,6 +303,7 @@ class TelnetServer:
             return f"{COLOR_RED}No lines found containing the keyword '{keyword}' in {VIDEOS_FILE}.{COLOR_RESET}"
 
     def get_uptime(self):
+        """Return server uptime information."""
         uptime_seconds = time.time() - self.start_time
         uptime_string = time.strftime("%H:%M:%S", time.gmtime(uptime_seconds))
         return (
@@ -297,6 +315,7 @@ class TelnetServer:
         )
 
     def get_stats(self):
+        """Return server statistics."""
         with self.lock:
             uptime_stats = self.get_uptime().split('\r\n')[2:]
             uptime_stats_text = "\r\n".join(uptime_stats)
@@ -316,6 +335,7 @@ class TelnetServer:
             return stats_text
 
     def start(self):
+        """Start the Telnet server and handle incoming connections."""
         try:
             while self.running:
                 try:
