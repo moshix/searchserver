@@ -17,7 +17,7 @@
 # v1.4 Add invocation parameter --delay for first 25 lines
 # v1.5 Log to server.log now
 # v1.6 recursiverly saearch subdirectories
-
+# v1.7 show results as they are found
 # invoke with python3 telnet_server.py --port 8023 --delay 0.05 --delay_lines 25 --files_dir FILES/
 
 import socket
@@ -30,7 +30,7 @@ from datetime import datetime
 import argparse
 
 # Version information
-version = "1.6"
+version = "1.7"
 
 # ANSI color codes for formatting
 COLOR_RESET = "\033[0m"
@@ -126,7 +126,7 @@ class TelnetServer:
                         with self.lock:
                             self.total_commands += 1
 
-                        response = self.handle_command(message, client_address)
+                        response = self.handle_command(message, client_socket, client_address)
                     else:
                         response = message
 
@@ -158,7 +158,7 @@ class TelnetServer:
             else:
                 client_socket.sendall((line + '\r\n').encode('utf-8'))
 
-    def handle_command(self, command, client_address):
+    def handle_command(self, command, client_socket, client_address):
         parts = command.split(" ", 1)
         cmd = parts[0].lower()
 
@@ -171,7 +171,8 @@ class TelnetServer:
                 with self.lock:
                     self.search_count += 1
                 self.log(f"Search command with keyword: {keyword}", client_address)
-                return self.search_files(keyword)
+                self.search_files(client_socket, keyword)
+                return ""
             else:
                 return self.invalid_command("Usage: /search <keyword>")
 
@@ -206,7 +207,7 @@ class TelnetServer:
             f"{COLOR_BLUE}{'Command':<15} {'Description'}{COLOR_RESET}\r\n"
             f"{'-'*40}\r\n"
             f"{COLOR_BLUE}/help{COLOR_RESET:<15} Show this help message\r\n"
-            f"{COLOR_BLUE}/search <keyword>{COLOR_RESET:<15} Search files in the FILES/ directory for a keyword\r\n"
+            f"{COLOR_BLUE}/search <keyword>{COLOR_RESET:<15} Search files in the specified directory for a keyword\r\n"
             f"{COLOR_BLUE}/videosearch <keyword>{COLOR_RESET:<15} Search for lines containing the keyword in videos.txt\r\n"
             f"{COLOR_BLUE}/logoff{COLOR_RESET:<15} Log off from the server\r\n"
             f"{COLOR_BLUE}/stats{COLOR_RESET:<15} Show server statistics\r\n"
@@ -221,33 +222,34 @@ class TelnetServer:
             paginated_response.append(header + "\r\n" + "\r\n".join(page))
         return "\r\n".join(paginated_response)
 
-    def search_files(self, keyword):
-        matching_files = []
+    def search_files(self, client_socket, keyword):
+        header = (
+            f"{COLOR_GREEN}Files containing the keyword '{keyword}':{COLOR_RESET}\r\n"
+            f"{COLOR_GREEN}{'No.':<5} {'File':<43} {'Location':<10} {'Content'}{COLOR_RESET}\r\n"
+            f"{'-'*100}\r\n"
+        )
+        self.send_response(client_socket, header)
         keyword = keyword.lower()
+        match_count = 0
+
         for root, dirs, files in os.walk(self.files_dir):
             for file in files:
                 file_path = os.path.join(root, file).replace(self.files_dir, "")
                 if file.lower().endswith('.pdf'):
                     matches = self.search_pdf(file_path, keyword)
-                    if matches:
-                        for match in matches:
-                            matching_files.append((file_path, match[0], match[1]))
+                    for match in matches:
+                        match_count += 1
+                        response = f"{match_count:<5} {COLOR_BLUE}{file_path:<43} {COLOR_YELLOW}{match[0]:<10} {COLOR_RESET}{match[1]}"
+                        self.send_response(client_socket, response)
                 else:
                     with open(os.path.join(root, file), 'r', errors='ignore') as f:
                         for line_number, line in enumerate(f, 1):
                             if keyword in line.lower():
-                                matching_files.append((file_path, f"Line {line_number}", line.strip()))
-
-        if matching_files:
-            header = (
-                f"{COLOR_GREEN}Files containing the keyword '{keyword}':{COLOR_RESET}\r\n"
-                f"{COLOR_GREEN}{'No.':<5} {'File':<43} {'Location':<10} {'Content'}{COLOR_RESET}\r\n"
-                f"{'-'*100}"
-            )
-            results = [f"{i + 1}. {COLOR_BLUE}{file:<43} {COLOR_YELLOW}{location:<10} {COLOR_RESET}{line}" for i, (file, location, line) in enumerate(matching_files)]
-            return self.paginate_response(header, results)
-        else:
-            return f"{COLOR_RED}No files found containing the keyword '{keyword}'.{COLOR_RESET}"
+                                match_count += 1
+                                response = f"{match_count:<5} {COLOR_BLUE}{file_path:<43} {COLOR_YELLOW}Line {line_number:<10} {COLOR_RESET}{line.strip()}"
+                                self.send_response(client_socket, response)
+        if match_count == 0:
+            self.send_response(client_socket, f"{COLOR_RED}No files found containing the keyword '{keyword}'.{COLOR_RESET}")
 
     def search_pdf(self, file_path, keyword):
         matches = []
@@ -259,7 +261,6 @@ class TelnetServer:
                 if text:
                     for line_number, line in enumerate(text.split('\n'), 1):
                         if keyword in line.lower():
-                            # Filter out /bulletmed and include PDF page number in the results
                             cleaned_line = line.replace("/bulletmed", "").strip()
                             matches.append((f"Page {page_number}", cleaned_line))
         return matches
