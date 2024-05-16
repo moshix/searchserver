@@ -22,7 +22,11 @@
 # v1.9 enable searching phrases (indepenent of capitalization)
 # v2.0 make search a bit fuzzier (no matter how many blanks between words in phrase)
 # v2.1 allow 2 search arguments in /search (in " ") and they will be treated as AND args
-# invoke with python3 telnet_server.py --port 8023 --delay 0.05 --delay_lines 25 --files_dir FILES/
+# v2.2 add invocation parameter for max results before it's too much!
+#
+# invoke with:
+#   python3 telnet_server.py --port 8023 --delay 0.05 --delay_lines 25 --files_dir FILES/ --max_results 30
+
 import socket
 import threading
 import os
@@ -34,7 +38,7 @@ import argparse
 import re
 
 # Version information
-version = "2.1"
+version = "2.2"
 
 # ANSI color codes for formatting
 COLOR_RESET = "\033[0m"
@@ -44,16 +48,14 @@ COLOR_RED = "\033[1;31m"
 COLOR_YELLOW = "\033[1;33m"
 COLOR_CYAN = "\033[1;36m"
 
-# Maximum number of search results
-MAX_RESULTS = 30
-
 class TelnetServer:
-    def __init__(self, host='0.0.0.0', port=8023, delay=0.05, delay_lines=25, files_dir='FILES/'):
+    def __init__(self, host='0.0.0.0', port=8023, delay=0.05, delay_lines=25, files_dir='FILES/', max_results=30):
         self.host = host
         self.port = port
         self.delay = delay
         self.delay_lines = delay_lines
         self.files_dir = files_dir
+        self.max_results = max_results
 
         # Initialize server socket
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -85,7 +87,7 @@ class TelnetServer:
         print("\nSIGINT received. Shutting down the server.")
         self.running = False
         self.server_socket.close()
-        
+
         # Close all client connections
         for thread in self.threads:
             thread.join()
@@ -246,7 +248,7 @@ class TelnetServer:
         """Search files for the given keywords and return the results."""
         matching_files = []
         keywords = [keyword.lower().strip() for keyword in keywords]
-        
+
         for root, dirs, files in os.walk(self.files_dir):
             for file in files:
                 file_path = os.path.join(root, file).replace(self.files_dir, "")
@@ -264,7 +266,7 @@ class TelnetServer:
                                     matching_files.append((file_path, f"Line {line_number}", line.strip()))
 
                 # Stop search if too many results are found
-                if len(matching_files) > MAX_RESULTS:
+                if len(matching_files) > self.max_results:
                     return f"{COLOR_RED}Too many search results found. Stopping search.{COLOR_RESET}"
 
         if matching_files:
@@ -371,8 +373,9 @@ if __name__ == '__main__':
     parser.add_argument('--delay', type=float, default=0.05, help='Delay in seconds between lines for short responses')
     parser.add_argument('--delay_lines', type=int, default=25, help='Number of lines to apply the delay to')
     parser.add_argument('--files_dir', type=str, default='FILES/', help='Directory to search files in')
+    parser.add_argument('--max_results', type=int, default=30, help='Maximum number of search results before stopping the search')
     args = parser.parse_args()
 
-    server = TelnetServer(port=args.port, delay=args.delay, delay_lines=args.delay_lines, files_dir=args.files_dir)
+    server = TelnetServer(port=args.port, delay=args.delay, delay_lines=args.delay_lines, files_dir=args.files_dir, max_results=args.max_results)
     server.start()
 
