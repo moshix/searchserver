@@ -22,6 +22,13 @@ Connect to the server using an SSH client (e.g., ssh username@localhost -p 8023)
 The SSH server in Go
 ====================
 
+The SSH server requires you to set up a key like this:
+<pre>
+  ssh-keygen -t rsa -f server_key -N ''
+
+</pre><br>
+  
+  
 To build do:
 <pre>
   go mod init ssh
