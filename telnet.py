@@ -16,6 +16,10 @@
 # v1.3 Properly shut down server with Ctrl-C
 # v1.4 Add invocation parameter --delay for first 25 lines
 # v1.5 Log to server.log now
+# v1.6 recursiverly saearch subdirectories
+
+# invoke with python3 telnet_server.py --port 8023 --delay 0.05 --delay_lines 25 --files_dir FILES/
+
 import socket
 import threading
 import os
@@ -26,7 +30,7 @@ from datetime import datetime
 import argparse
 
 # Version information
-version = "1.5"
+version = "1.6"
 
 # ANSI color codes for formatting
 COLOR_RESET = "\033[0m"
@@ -36,15 +40,13 @@ COLOR_RED = "\033[1;31m"
 COLOR_YELLOW = "\033[1;33m"
 COLOR_CYAN = "\033[1;36m"
 
-FILES_DIR = "FILES/"
-VIDEOS_FILE = "videos.txt"
-
 class TelnetServer:
-    def __init__(self, host='0.0.0.0', port=8023, delay=0.05, delay_lines=25):
+    def __init__(self, host='0.0.0.0', port=8023, delay=0.05, delay_lines=25, files_dir='FILES/'):
         self.host = host
         self.port = port
         self.delay = delay
         self.delay_lines = delay_lines
+        self.files_dir = files_dir
 
         # Initialize server socket
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -75,7 +77,7 @@ class TelnetServer:
         print("\nSIGINT received. Shutting down the server.")
         self.running = False
         self.server_socket.close()
-        
+
         # Close all client connections
         for thread in self.threads:
             thread.join()
@@ -222,9 +224,9 @@ class TelnetServer:
     def search_files(self, keyword):
         matching_files = []
         keyword = keyword.lower()
-        for root, dirs, files in os.walk(FILES_DIR):
+        for root, dirs, files in os.walk(self.files_dir):
             for file in files:
-                file_path = os.path.join(root, file).replace(FILES_DIR, "")
+                file_path = os.path.join(root, file).replace(self.files_dir, "")
                 if file.lower().endswith('.pdf'):
                     matches = self.search_pdf(file_path, keyword)
                     if matches:
@@ -249,7 +251,7 @@ class TelnetServer:
 
     def search_pdf(self, file_path, keyword):
         matches = []
-        full_path = os.path.join(FILES_DIR, file_path)
+        full_path = os.path.join(self.files_dir, file_path)
         with open(full_path, 'rb') as file:
             reader = PyPDF2.PdfReader(file)
             for page_number, page in enumerate(reader.pages, 1):
@@ -332,8 +334,9 @@ if __name__ == '__main__':
     parser.add_argument('--port', type=int, default=8023, help='Port to run the Telnet server on')
     parser.add_argument('--delay', type=float, default=0.05, help='Delay in seconds between lines for short responses')
     parser.add_argument('--delay_lines', type=int, default=25, help='Number of lines to apply the delay to')
+    parser.add_argument('--files_dir', type=str, default='FILES/', help='Directory to search files in')
     args = parser.parse_args()
 
-    server = TelnetServer(port=args.port, delay=args.delay, delay_lines=args.delay_lines)
+    server = TelnetServer(port=args.port, delay=args.delay, delay_lines=args.delay_lines, files_dir=args.files_dir)
     server.start()
 
