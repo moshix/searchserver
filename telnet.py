@@ -12,6 +12,10 @@
 # v0.9 paginate the output
 # v1.0 color code responses nicer 
 # v1.1 slight delay for better terminal experience
+# v1.2 Fix headers for responses
+# v1.3 Properly shut down server with Ctrl-C
+# v1.4 Add invocation parameter --delay for first 25 lines
+# v1.5 Log to server.log now
 import socket
 import threading
 import os
@@ -22,7 +26,7 @@ from datetime import datetime
 import argparse
 
 # Version information
-version = "1.1"
+version = "1.5"
 
 # ANSI color codes for formatting
 COLOR_RESET = "\033[0m"
@@ -36,15 +40,19 @@ FILES_DIR = "FILES/"
 VIDEOS_FILE = "videos.txt"
 
 class TelnetServer:
-    def __init__(self, host='0.0.0.0', port=8023):
+    def __init__(self, host='0.0.0.0', port=8023, delay=0.05, delay_lines=25):
         self.host = host
         self.port = port
+        self.delay = delay
+        self.delay_lines = delay_lines
 
+        # Initialize server socket
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.bind((self.host, self.port))
         self.server_socket.listen(5)
         print(f"Telnet server started on {self.host}:{self.port}")
 
+        # Initialize server state and statistics
         self.client_count = 0
         self.total_clients = 0
         self.total_messages = 0
@@ -55,21 +63,43 @@ class TelnetServer:
         self.start_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.lock = threading.Lock()
         self.running = True
+        self.threads = []
 
+        # Log file setup
+        self.log_file = open('server.log', 'a')
+
+        # Handle SIGINT (Control-C) to shut down the server gracefully
         signal.signal(signal.SIGINT, self.handle_sigint)
 
     def handle_sigint(self, signum, frame):
         print("\nSIGINT received. Shutting down the server.")
         self.running = False
         self.server_socket.close()
+        
+        # Close all client connections
+        for thread in self.threads:
+            thread.join()
+
+        # Close log file
+        self.log_file.close()
+
+        print("Server shut down successfully.")
+
+    def log(self, message, client_address=None):
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        log_message = f"{timestamp} - {client_address} - {message}" if client_address else f"{timestamp} - {message}"
+        print(log_message)
+        self.log_file.write(log_message + '\n')
+        self.log_file.flush()
 
     def handle_client(self, client_socket, client_address):
         with self.lock:
             self.client_count += 1
             self.total_clients += 1
-        print(f"Accepted connection from {client_address}")
+        self.log(f"Accepted connection from {client_address}", client_address)
 
         try:
+            # Send welcome message and help message to the client
             client_socket.sendall(f"\n{COLOR_GREEN}Welcome to the Telnet server! Version: {version}{COLOR_RESET}\r\n".encode('utf-8'))
             client_socket.sendall(self.show_help().encode('utf-8') + b'\r\n')
 
@@ -83,7 +113,7 @@ class TelnetServer:
                 if '\n' in buffer:
                     message, buffer = buffer.split('\n', 1)
                     message = message.strip()
-                    print(f"Received from {client_address}: {message}")
+                    self.log(f"Received command: {message}", client_address)
 
                     start_time = time.time()
 
@@ -94,7 +124,7 @@ class TelnetServer:
                         with self.lock:
                             self.total_commands += 1
 
-                        response = self.handle_command(message)
+                        response = self.handle_command(message, client_address)
                     else:
                         response = message
 
@@ -108,26 +138,25 @@ class TelnetServer:
                         break
 
         except (ConnectionResetError, BrokenPipeError, KeyboardInterrupt):
-            print(f"Connection with {client_address} was interrupted.")
+            self.log(f"Connection with {client_address} was interrupted.", client_address)
         except Exception as e:
-            print(f"Unexpected error with {client_address}: {e}")
+            self.log(f"Unexpected error with {client_address}: {e}", client_address)
         finally:
             client_socket.close()
             with self.lock:
                 self.client_count -= 1
-            print(f"Connection with {client_address} closed.")
+            self.log(f"Connection with {client_address} closed.", client_address)
 
     def send_response(self, client_socket, response):
         lines = response.split('\r\n')
-        if len(lines) <= 25:
-            for line in lines:
+        for i, line in enumerate(lines):
+            if i < self.delay_lines:
                 client_socket.sendall((line + '\r\n').encode('utf-8'))
-                time.sleep(0.05)
-        else:
-            for line in lines:
+                time.sleep(self.delay)
+            else:
                 client_socket.sendall((line + '\r\n').encode('utf-8'))
 
-    def handle_command(self, command):
+    def handle_command(self, command, client_address):
         parts = command.split(" ", 1)
         cmd = parts[0].lower()
 
@@ -139,6 +168,7 @@ class TelnetServer:
                 keyword = parts[1]
                 with self.lock:
                     self.search_count += 1
+                self.log(f"Search command with keyword: {keyword}", client_address)
                 return self.search_files(keyword)
             else:
                 return self.invalid_command("Usage: /search <keyword>")
@@ -148,6 +178,7 @@ class TelnetServer:
                 keyword = parts[1]
                 with self.lock:
                     self.videosearch_count += 1
+                self.log(f"Video search command with keyword: {keyword}", client_address)
                 return self.search_videos(keyword)
             else:
                 return self.invalid_command("Usage: /videosearch <keyword>")
@@ -193,39 +224,42 @@ class TelnetServer:
         keyword = keyword.lower()
         for root, dirs, files in os.walk(FILES_DIR):
             for file in files:
-                file_path = os.path.join(root, file)
+                file_path = os.path.join(root, file).replace(FILES_DIR, "")
                 if file.lower().endswith('.pdf'):
                     matches = self.search_pdf(file_path, keyword)
                     if matches:
                         for match in matches:
                             matching_files.append((file_path, match[0], match[1]))
                 else:
-                    with open(file_path, 'r', errors='ignore') as f:
+                    with open(os.path.join(root, file), 'r', errors='ignore') as f:
                         for line_number, line in enumerate(f, 1):
                             if keyword in line.lower():
-                                matching_files.append((file_path, line_number, line.strip()))
+                                matching_files.append((file_path, f"Line {line_number}", line.strip()))
 
         if matching_files:
             header = (
                 f"{COLOR_GREEN}Files containing the keyword '{keyword}':{COLOR_RESET}\r\n"
-                f"{COLOR_GREEN}{'No.':<5} {'File':<50} {'Line':<5} {'Content'}{COLOR_RESET}\r\n"
+                f"{COLOR_GREEN}{'No.':<5} {'File':<43} {'Location':<10} {'Content'}{COLOR_RESET}\r\n"
                 f"{'-'*100}"
             )
-            results = [f"{i + 1}. {COLOR_BLUE}{file:<50} {COLOR_YELLOW}{line_number:<5} {COLOR_RESET}{line}" for i, (file, line_number, line) in enumerate(matching_files)]
+            results = [f"{i + 1}. {COLOR_BLUE}{file:<43} {COLOR_YELLOW}{location:<10} {COLOR_RESET}{line}" for i, (file, location, line) in enumerate(matching_files)]
             return self.paginate_response(header, results)
         else:
             return f"{COLOR_RED}No files found containing the keyword '{keyword}'.{COLOR_RESET}"
 
     def search_pdf(self, file_path, keyword):
         matches = []
-        with open(file_path, 'rb') as file:
+        full_path = os.path.join(FILES_DIR, file_path)
+        with open(full_path, 'rb') as file:
             reader = PyPDF2.PdfReader(file)
             for page_number, page in enumerate(reader.pages, 1):
                 text = page.extract_text()
                 if text:
                     for line_number, line in enumerate(text.split('\n'), 1):
                         if keyword in line.lower():
-                            matches.append((page_number, line.strip()))
+                            # Filter out /bulletmed and include PDF page number in the results
+                            cleaned_line = line.replace("/bulletmed", "").strip()
+                            matches.append((f"Page {page_number}", cleaned_line))
         return matches
 
     def search_videos(self, keyword):
@@ -240,7 +274,7 @@ class TelnetServer:
         if matching_lines:
             header = (
                 f"{COLOR_GREEN}Lines containing the keyword '{keyword}' in {VIDEOS_FILE}:{COLOR_RESET}\r\n"
-                f"{COLOR_GREEN}{'Line':<5} {'Content':<50}{COLOR_RESET}\r\n"
+                f"{COLOR_GREEN}{'Location':<10} {'Content':<50}{COLOR_RESET}\r\n"
                 f"{'-'*55}"
             )
             results = [f"{COLOR_YELLOW}{line}" for line in matching_lines]
@@ -284,6 +318,7 @@ class TelnetServer:
                 try:
                     client_socket, client_address = self.server_socket.accept()
                     client_thread = threading.Thread(target=self.handle_client, args=(client_socket, client_address))
+                    self.threads.append(client_thread)
                     client_thread.start()
                 except OSError:
                     break
@@ -295,8 +330,10 @@ class TelnetServer:
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Start a Telnet server.')
     parser.add_argument('--port', type=int, default=8023, help='Port to run the Telnet server on')
+    parser.add_argument('--delay', type=float, default=0.05, help='Delay in seconds between lines for short responses')
+    parser.add_argument('--delay_lines', type=int, default=25, help='Number of lines to apply the delay to')
     args = parser.parse_args()
 
-    server = TelnetServer(port=args.port)
+    server = TelnetServer(port=args.port, delay=args.delay, delay_lines=args.delay_lines)
     server.start()
 
