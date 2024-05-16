@@ -19,6 +19,7 @@
 # v1.6 recursiverly saearch subdirectories
 # v1.7 for too many results, stop and give error msg
 # v1.8 insert comments in code.... 
+# v1.9 enable searching phrases (indepenent of capitalization)
 # invoke with python3 telnet_server.py --port 8023 --delay 0.05 --delay_lines 25 --files_dir FILES/
 
 import socket
@@ -31,7 +32,7 @@ from datetime import datetime
 import argparse
 
 # Version information
-version = "1.8"
+version = "1.9"
 
 # ANSI color codes for formatting
 COLOR_RESET = "\033[0m"
@@ -82,7 +83,7 @@ class TelnetServer:
         print("\nSIGINT received. Shutting down the server.")
         self.running = False
         self.server_socket.close()
-        
+
         # Close all client connections
         for thread in self.threads:
             thread.join()
@@ -237,18 +238,26 @@ class TelnetServer:
         """Search files for the given keyword and return the results."""
         matching_files = []
         keyword = keyword.lower()
+
+        # Determine if the keyword is a phrase enclosed in double quotes
+        if keyword.startswith('"') and keyword.endswith('"'):
+            keyword = keyword[1:-1]  # Remove the double quotes
+            is_phrase = True
+        else:
+            is_phrase = False
+
         for root, dirs, files in os.walk(self.files_dir):
             for file in files:
                 file_path = os.path.join(root, file).replace(self.files_dir, "")
                 if file.lower().endswith('.pdf'):
-                    matches = self.search_pdf(file_path, keyword)
+                    matches = self.search_pdf(file_path, keyword, is_phrase)
                     if matches:
                         for match in matches:
                             matching_files.append((file_path, match[0], match[1]))
                 else:
                     with open(os.path.join(root, file), 'r', errors='ignore') as f:
                         for line_number, line in enumerate(f, 1):
-                            if keyword in line.lower():
+                            if (is_phrase and keyword in line.lower()) or (not is_phrase and keyword in line.lower().split()):
                                 matching_files.append((file_path, f"Line {line_number}", line.strip()))
 
                 # Stop search if too many results are found
@@ -266,7 +275,7 @@ class TelnetServer:
         else:
             return f"{COLOR_RED}No files found containing the keyword '{keyword}'.{COLOR_RESET}"
 
-    def search_pdf(self, file_path, keyword):
+    def search_pdf(self, file_path, keyword, is_phrase):
         """Search PDF files for the given keyword and return the results."""
         matches = []
         full_path = os.path.join(self.files_dir, file_path)
@@ -276,7 +285,8 @@ class TelnetServer:
                 text = page.extract_text()
                 if text:
                     for line_number, line in enumerate(text.split('\n'), 1):
-                        if keyword in line.lower():
+                        line_lower = line.lower()
+                        if (is_phrase and keyword in line_lower) or (not is_phrase and keyword in line_lower.split()):
                             cleaned_line = line.replace("/bulletmed", "").strip()
                             matches.append((f"Page {page_number}", cleaned_line))
         return matches
