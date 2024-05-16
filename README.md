@@ -22,9 +22,12 @@ Connect to the server using an SSH client (e.g., ssh username@localhost -p 8023)
 The SSH server in Go
 ====================
 
-Do a go install golang.org/x/crypto/ssh@latest
-
-the go build ssh.go
+To build do:
+<pre>
+  go mod init ssh
+  go mod tidy
+  go build ssh.go
+</pre>
 
 
 How to make it work with searchable content
