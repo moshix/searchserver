@@ -7,7 +7,7 @@ The telnet.py server is, well... for telnet clients.
 Install PyPDF2 with:
 <pre>pip3 install PyPDF2</pre>
 
-Start it with python3 search.py --port 1023
+Start it with python3 telnet.py --port 1023
 
 The SSH server in Python
 ========================
