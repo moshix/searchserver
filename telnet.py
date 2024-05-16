@@ -23,7 +23,6 @@
 # v2.0 make search a bit fuzzier (no matter how many blanks between words in phrase)
 # v2.1 allow 2 search arguments in /search (in " ") and they will be treated as AND args
 # invoke with python3 telnet_server.py --port 8023 --delay 0.05 --delay_lines 25 --files_dir FILES/
-
 import socket
 import threading
 import os
@@ -86,7 +85,7 @@ class TelnetServer:
         print("\nSIGINT received. Shutting down the server.")
         self.running = False
         self.server_socket.close()
-
+        
         # Close all client connections
         for thread in self.threads:
             thread.join()
@@ -180,13 +179,15 @@ class TelnetServer:
 
         elif cmd == "/search":
             if len(parts) > 1:
-                keyword = parts[1]
+                args = self.parse_search_args(parts[1])
+                if len(args) > 2:
+                    return self.invalid_command("Usage: /search \"<keyword1>\" [\"<keyword2>\"]")
                 with self.lock:
                     self.search_count += 1
-                self.log(f"Search command with keyword: {keyword}", client_address)
-                return self.search_files(keyword)
+                self.log(f"Search command with keywords: {args}", client_address)
+                return self.search_files(args)
             else:
-                return self.invalid_command("Usage: /search <keyword>")
+                return self.invalid_command("Usage: /search \"<keyword1>\" [\"<keyword2>\"]")
 
         elif cmd == "/videosearch":
             if len(parts) > 1:
@@ -221,7 +222,7 @@ class TelnetServer:
             f"{COLOR_BLUE}{'Command':<15} {'Description'}{COLOR_RESET}\r\n"
             f"{'-'*40}\r\n"
             f"{COLOR_BLUE}/help{COLOR_RESET:<15} Show this help message\r\n"
-            f"{COLOR_BLUE}/search <keyword>{COLOR_RESET:<15} Search files in the specified directory for a keyword\r\n"
+            f"{COLOR_BLUE}/search \"<keyword1>\" [\"<keyword2>\"]{COLOR_RESET:<15} Search files for up to two keywords (both must be present)\r\n"
             f"{COLOR_BLUE}/videosearch <keyword>{COLOR_RESET:<15} Search for lines containing the keyword in videos.txt\r\n"
             f"{COLOR_BLUE}/logoff{COLOR_RESET:<15} Log off from the server\r\n"
             f"{COLOR_BLUE}/stats{COLOR_RESET:<15} Show server statistics\r\n"
@@ -237,32 +238,30 @@ class TelnetServer:
             paginated_response.append(header + "\r\n" + "\r\n".join(page))
         return "\r\n".join(paginated_response)
 
-    def search_files(self, keyword):
-        """Search files for the given keyword and return the results."""
+    def parse_search_args(self, args_str):
+        """Parse search arguments enclosed in double quotes."""
+        return re.findall(r'"(.*?)"', args_str)
+
+    def search_files(self, keywords):
+        """Search files for the given keywords and return the results."""
         matching_files = []
-        keyword = keyword.lower()
-
-        # Determine if the keyword is a phrase enclosed in double quotes
-        if keyword.startswith('"') and keyword.endswith('"'):
-            keyword = re.sub(r'\s+', ' ', keyword[1:-1]).strip()  # Remove the double quotes and extra spaces
-            is_phrase = True
-        else:
-            is_phrase = False
-
+        keywords = [keyword.lower().strip() for keyword in keywords]
+        
         for root, dirs, files in os.walk(self.files_dir):
             for file in files:
                 file_path = os.path.join(root, file).replace(self.files_dir, "")
                 if file.lower().endswith('.pdf'):
-                    matches = self.search_pdf(file_path, keyword, is_phrase)
+                    matches = self.search_pdf(file_path, keywords)
                     if matches:
                         for match in matches:
                             matching_files.append((file_path, match[0], match[1]))
                 else:
                     with open(os.path.join(root, file), 'r', errors='ignore') as f:
-                        for line_number, line in enumerate(f, 1):
-                            normalized_line = re.sub(r'\s+', ' ', line.lower()).strip()
-                            if (is_phrase and keyword in normalized_line) or (not is_phrase and keyword in normalized_line.split()):
-                                matching_files.append((file_path, f"Line {line_number}", line.strip()))
+                        content = f.read().lower()
+                        if all(keyword in re.sub(r'\s+', ' ', content) for keyword in keywords):
+                            for line_number, line in enumerate(content.splitlines(), 1):
+                                if all(keyword in re.sub(r'\s+', ' ', line) for keyword in keywords):
+                                    matching_files.append((file_path, f"Line {line_number}", line.strip()))
 
                 # Stop search if too many results are found
                 if len(matching_files) > MAX_RESULTS:
@@ -270,17 +269,17 @@ class TelnetServer:
 
         if matching_files:
             header = (
-                f"{COLOR_GREEN}Files containing the keyword '{keyword}':{COLOR_RESET}\r\n"
+                f"{COLOR_GREEN}Files containing the keywords '{' and '.join(keywords)}':{COLOR_RESET}\r\n"
                 f"{COLOR_GREEN}{'No.':<5} {'File':<43} {'Location':<10} {'Content'}{COLOR_RESET}\r\n"
                 f"{'-'*100}"
             )
             results = [f"{i + 1}. {COLOR_BLUE}{file:<43} {COLOR_YELLOW}{location:<10} {COLOR_RESET}{line}" for i, (file, location, line) in enumerate(matching_files)]
             return self.paginate_response(header, results)
         else:
-            return f"{COLOR_RED}No files found containing the keyword '{keyword}'.{COLOR_RESET}"
+            return f"{COLOR_RED}No files found containing the keywords '{' and '.join(keywords)}'.{COLOR_RESET}"
 
-    def search_pdf(self, file_path, keyword, is_phrase):
-        """Search PDF files for the given keyword and return the results."""
+    def search_pdf(self, file_path, keywords):
+        """Search PDF files for the given keywords and return the results."""
         matches = []
         full_path = os.path.join(self.files_dir, file_path)
         with open(full_path, 'rb') as file:
@@ -288,11 +287,13 @@ class TelnetServer:
             for page_number, page in enumerate(reader.pages, 1):
                 text = page.extract_text()
                 if text:
-                    for line_number, line in enumerate(text.split('\n'), 1):
-                        normalized_line = re.sub(r'\s+', ' ', line.lower()).strip()
-                        if (is_phrase and keyword in normalized_line) or (not is_phrase and keyword in normalized_line.split()):
-                            cleaned_line = line.replace("/bulletmed", "").strip()
-                            matches.append((f"Page {page_number}", cleaned_line))
+                    normalized_text = re.sub(r'\s+', ' ', text.lower())
+                    if all(keyword in normalized_text for keyword in keywords):
+                        for line_number, line in enumerate(text.split('\n'), 1):
+                            normalized_line = re.sub(r'\s+', ' ', line.lower()).strip()
+                            if all(keyword in normalized_line for keyword in keywords):
+                                cleaned_line = line.replace("/bulletmed", "").strip()
+                                matches.append((f"Page {page_number}", cleaned_line))
         return matches
 
     def search_videos(self, keyword):
