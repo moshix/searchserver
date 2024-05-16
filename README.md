@@ -1,4 +1,4 @@
-A Termianl-based Search Server
+A Terminal-based Search Server
 ==============================
 
 
