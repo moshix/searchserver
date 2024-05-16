@@ -20,6 +20,8 @@
 # v1.7 for too many results, stop and give error msg
 # v1.8 insert comments in code.... 
 # v1.9 enable searching phrases (indepenent of capitalization)
+# v2.0 make search a bit fuzzier (no matter how many blanks between words in phrase)
+# v2.1 allow 2 search arguments in /search (in " ") and they will be treated as AND args
 # invoke with python3 telnet_server.py --port 8023 --delay 0.05 --delay_lines 25 --files_dir FILES/
 
 import socket
@@ -30,9 +32,10 @@ import time
 import PyPDF2
 from datetime import datetime
 import argparse
+import re
 
 # Version information
-version = "1.9"
+version = "2.1"
 
 # ANSI color codes for formatting
 COLOR_RESET = "\033[0m"
@@ -241,7 +244,7 @@ class TelnetServer:
 
         # Determine if the keyword is a phrase enclosed in double quotes
         if keyword.startswith('"') and keyword.endswith('"'):
-            keyword = keyword[1:-1]  # Remove the double quotes
+            keyword = re.sub(r'\s+', ' ', keyword[1:-1]).strip()  # Remove the double quotes and extra spaces
             is_phrase = True
         else:
             is_phrase = False
@@ -257,7 +260,8 @@ class TelnetServer:
                 else:
                     with open(os.path.join(root, file), 'r', errors='ignore') as f:
                         for line_number, line in enumerate(f, 1):
-                            if (is_phrase and keyword in line.lower()) or (not is_phrase and keyword in line.lower().split()):
+                            normalized_line = re.sub(r'\s+', ' ', line.lower()).strip()
+                            if (is_phrase and keyword in normalized_line) or (not is_phrase and keyword in normalized_line.split()):
                                 matching_files.append((file_path, f"Line {line_number}", line.strip()))
 
                 # Stop search if too many results are found
@@ -285,8 +289,8 @@ class TelnetServer:
                 text = page.extract_text()
                 if text:
                     for line_number, line in enumerate(text.split('\n'), 1):
-                        line_lower = line.lower()
-                        if (is_phrase and keyword in line_lower) or (not is_phrase and keyword in line_lower.split()):
+                        normalized_line = re.sub(r'\s+', ' ', line.lower()).strip()
+                        if (is_phrase and keyword in normalized_line) or (not is_phrase and keyword in normalized_line.split()):
                             cleaned_line = line.replace("/bulletmed", "").strip()
                             matches.append((f"Page {page_number}", cleaned_line))
         return matches
