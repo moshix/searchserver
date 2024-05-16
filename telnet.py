@@ -23,6 +23,7 @@
 # v2.0 make search a bit fuzzier (no matter how many blanks between words in phrase)
 # v2.1 allow 2 search arguments in /search (in " ") and they will be treated as AND args
 # v2.2 add invocation parameter for max results before it's too much!
+# v2.3 read files in chunks, parallelize to speed up the search
 #
 # invoke with:
 #   python3 telnet_server.py --port 8023 --delay 0.05 --delay_lines 25 --files_dir FILES/ --max_results 30
@@ -36,9 +37,10 @@ import PyPDF2
 from datetime import datetime
 import argparse
 import re
+from concurrent.futures import ThreadPoolExecutor
 
 # Version information
-version = "2.2"
+version = "2.3"
 
 # ANSI color codes for formatting
 COLOR_RESET = "\033[0m"
@@ -82,6 +84,9 @@ class TelnetServer:
         # Handle SIGINT (Control-C) to shut down the server gracefully
         signal.signal(signal.SIGINT, self.handle_sigint)
 
+        # Thread pool for concurrent file searches
+        self.executor = ThreadPoolExecutor(max_workers=8)
+
     def handle_sigint(self, signum, frame):
         """Handle SIGINT signal to shut down the server gracefully."""
         print("\nSIGINT received. Shutting down the server.")
@@ -94,6 +99,9 @@ class TelnetServer:
 
         # Close log file
         self.log_file.close()
+
+        # Shutdown executor
+        self.executor.shutdown(wait=True)
 
         print("Server shut down successfully.")
 
@@ -246,28 +254,29 @@ class TelnetServer:
 
     def search_files(self, keywords):
         """Search files for the given keywords and return the results."""
-        matching_files = []
         keywords = [keyword.lower().strip() for keyword in keywords]
+        matching_files = []
+        tasks = []
 
         for root, dirs, files in os.walk(self.files_dir):
             for file in files:
                 file_path = os.path.join(root, file).replace(self.files_dir, "")
                 if file.lower().endswith('.pdf'):
-                    matches = self.search_pdf(file_path, keywords)
-                    if matches:
-                        for match in matches:
-                            matching_files.append((file_path, match[0], match[1]))
+                    tasks.append(self.executor.submit(self.search_pdf, file_path, keywords))
                 else:
-                    with open(os.path.join(root, file), 'r', errors='ignore') as f:
-                        content = f.read().lower()
-                        if all(keyword in re.sub(r'\s+', ' ', content) for keyword in keywords):
-                            for line_number, line in enumerate(content.splitlines(), 1):
-                                if all(keyword in re.sub(r'\s+', ' ', line) for keyword in keywords):
-                                    matching_files.append((file_path, f"Line {line_number}", line.strip()))
+                    tasks.append(self.executor.submit(self.search_text_file, file_path, keywords))
 
-                # Stop search if too many results are found
-                if len(matching_files) > self.max_results:
-                    return f"{COLOR_RED}Too many search results found. Stopping search.{COLOR_RESET}"
+        for future in tasks:
+            try:
+                matches = future.result()
+                for match in matches:
+                    if len(match) == 3:
+                        matching_files.append(match)
+            except Exception as e:
+                self.log(f"Error during search: {e}")
+
+            if len(matching_files) > self.max_results:
+                return f"{COLOR_RED}Too many search results found. Stopping search.{COLOR_RESET}"
 
         if matching_files:
             header = (
@@ -279,6 +288,18 @@ class TelnetServer:
             return self.paginate_response(header, results)
         else:
             return f"{COLOR_RED}No files found containing the keywords '{' and '.join(keywords)}'.{COLOR_RESET}"
+
+    def search_text_file(self, file_path, keywords):
+        """Search text files for the given keywords."""
+        matches = []
+        full_path = os.path.join(self.files_dir, file_path)
+        with open(full_path, 'r', errors='ignore') as f:
+            content = f.read().lower()
+            if all(keyword in re.sub(r'\s+', ' ', content) for keyword in keywords):
+                for line_number, line in enumerate(content.splitlines(), 1):
+                    if all(keyword in re.sub(r'\s+', ' ', line) for keyword in keywords):
+                        matches.append((file_path, f"Line {line_number}", line.strip()))
+        return matches
 
     def search_pdf(self, file_path, keywords):
         """Search PDF files for the given keywords and return the results."""
@@ -295,29 +316,29 @@ class TelnetServer:
                             normalized_line = re.sub(r'\s+', ' ', line.lower()).strip()
                             if all(keyword in normalized_line for keyword in keywords):
                                 cleaned_line = line.replace("/bulletmed", "").strip()
-                                matches.append((f"Page {page_number}", cleaned_line))
+                                matches.append((file_path, f"Page {page_number}", cleaned_line))
         return matches
 
     def search_videos(self, keyword):
         """Search videos.txt for the given keyword and return the results."""
         matching_lines = []
         keyword = keyword.lower()
-        if os.path.exists(VIDEOS_FILE):
-            with open(VIDEOS_FILE, 'r', errors='ignore') as f:
+        if os.path.exists('videos.txt'):
+            with open('videos.txt', 'r', errors='ignore') as f:
                 for line_number, line in enumerate(f, 1):
                     if keyword in line.lower():
                         matching_lines.append(f"{line_number:<5} {line.strip()}")
 
         if matching_lines:
             header = (
-                f"{COLOR_GREEN}Lines containing the keyword '{keyword}' in {VIDEOS_FILE}:{COLOR_RESET}\r\n"
+                f"{COLOR_GREEN}Lines containing the keyword '{keyword}' in videos.txt:{COLOR_RESET}\r\n"
                 f"{COLOR_GREEN}{'Location':<10} {'Content':<50}{COLOR_RESET}\r\n"
                 f"{'-'*55}"
             )
             results = [f"{COLOR_YELLOW}{line}" for line in matching_lines]
             return self.paginate_response(header, results)
         else:
-            return f"{COLOR_RED}No lines found containing the keyword '{keyword}' in {VIDEOS_FILE}.{COLOR_RESET}"
+            return f"{COLOR_RED}No lines found containing the keyword '{keyword}' in videos.txt.{COLOR_RESET}"
 
     def get_uptime(self):
         """Return server uptime information."""
