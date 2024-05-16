@@ -4,7 +4,7 @@ A Terminal-based Search Server
 
 The telnet.py server is, well... for telnet clients. 
 
-Install PyPDF2 with:
+Install PyPDF2 and Sendgrid with:
 <pre>pip3 install PyPDF2 sendgrid</pre>
 
 Start it with python3 telnet.py --port 1023
