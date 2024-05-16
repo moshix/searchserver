@@ -4,6 +4,12 @@ A Terminal-based Search Server
 
 The telnet.py server is, well... for telnet clients
 
+The SSH server
+==============
+
+You will need to pip install paramiko. 
+
+
 The SSH server requires you to set up a key like this:
 <pre>
   ssh-keygen -t rsa -f server_key -N ''
