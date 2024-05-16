@@ -2,7 +2,10 @@ A Terminal-based Search Server
 ==============================
 
 
-The telnet.py server is, well... for telnet clients
+The telnet.py server is, well... for telnet clients. 
+
+Install PyPDF2 with:
+<pre>pip3 install PyPDF2</pre>
 
 The SSH server in Python
 ========================
